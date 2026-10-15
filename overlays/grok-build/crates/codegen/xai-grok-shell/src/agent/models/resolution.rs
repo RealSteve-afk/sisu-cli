@@ -142,6 +142,11 @@ pub(crate) fn first_or_fallback(
         return Ok((key.clone(), entry.clone()));
     }
     if crate::sisu_access_point::active() {
+        if crate::sisu_access_point::session_needs_login() {
+            let mut entry = ModelEntry::fallback("sisu", &cfg.endpoints);
+            entry.info.name = Some("SiSu".to_string());
+            return Ok(("sisu".to_string(), entry));
+        }
         return Err("no SiSu model available".to_string());
     }
     tracing::warn!("no selectable models; falling back to bundled default (pre-catalog)");
@@ -338,9 +343,13 @@ mod access_point_tests {
     #[test]
     #[serial]
     fn access_point_first_or_fallback_does_not_yield_grok_46() {
-        // with sisu_access_point::active() true and empty catalog, first_or_fallback is Err
-        // and the error string does not contain "grok-4.6"
+        // A still-valid session with an empty catalog fail-closes, and never names grok-4.6.
         let _flag = EnvGuard::set("SISU_ACCESS_POINT", "1");
+        let _tok = EnvGuard::set(
+            "SISU_TOKEN",
+            "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.sig",
+        );
+        let _xai = EnvGuard::unset("XAI_API_KEY");
         assert!(crate::sisu_access_point::active());
         let cfg = config::Config::default();
         let empty: IndexMap<String, ModelEntry> = IndexMap::new();
@@ -349,5 +358,20 @@ mod access_point_tests {
             !err.to_string().contains("grok-4.6"),
             "access-point error must not mention grok-4.6: {err}"
         );
+    }
+
+    #[test]
+    #[serial]
+    fn access_point_expired_token_boots_sisu_placeholder_not_grok() {
+        let _flag = EnvGuard::set("SISU_ACCESS_POINT", "1");
+        let _tok = EnvGuard::set("SISU_TOKEN", "eyJhbGciOiJub25lIn0.eyJleHAiOjF9.sig");
+        let _xai = EnvGuard::unset("XAI_API_KEY");
+        let cfg = config::Config::default();
+        let empty: IndexMap<String, ModelEntry> = IndexMap::new();
+        let (key, entry) = first_or_fallback(&empty, &empty, &cfg)
+            .expect("expired session must reach the login screen");
+        assert_eq!(key, "sisu");
+        assert_eq!(entry.info.model, "sisu");
+        assert!(!entry.info.model.contains("grok"));
     }
 }

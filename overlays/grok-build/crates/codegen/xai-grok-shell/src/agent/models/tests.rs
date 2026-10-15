@@ -1222,11 +1222,32 @@ async fn sign_out_clears_catalog_rebuilds_bundled_without_fetching() {
 fn sampling_config_access_point_empty_catalog_does_not_yield_grok_46() {
     use xai_grok_test_support::EnvGuard;
     let _ap = EnvGuard::set("SISU_ACCESS_POINT", "1");
+    let _tok = EnvGuard::unset("SISU_TOKEN");
+    let _xai = EnvGuard::unset("XAI_API_KEY");
+    let mgr = test_manager();
+    assert!(mgr.models().is_empty(), "fixture must be an empty catalog");
+    let cfg = mgr
+        .sampling_config_result()
+        .expect("missing session must boot a login placeholder");
+    assert_eq!(cfg.model, "sisu");
+    assert!(!cfg.model.contains("grok"));
+}
+
+#[test]
+#[serial_test::serial]
+fn sampling_config_access_point_empty_catalog_with_valid_session_errors() {
+    use xai_grok_test_support::EnvGuard;
+    let _ap = EnvGuard::set("SISU_ACCESS_POINT", "1");
+    let _tok = EnvGuard::set(
+        "SISU_TOKEN",
+        "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.sig",
+    );
+    let _xai = EnvGuard::unset("XAI_API_KEY");
     let mgr = test_manager();
     assert!(mgr.models().is_empty(), "fixture must be an empty catalog");
     let err = mgr
         .sampling_config_result()
-        .expect_err("access-point empty catalog must error");
+        .expect_err("valid session with empty catalog must error");
     assert!(
         !err.contains("grok-4.6"),
         "must not mention grok-4.6: {err}"

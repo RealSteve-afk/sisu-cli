@@ -2,7 +2,13 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 
-import { NATIVE_PAGER_FALLBACK_NOTICE, runTui, TUI_REQUIRES_TTY_NOTICE } from './tui'
+import {
+  accessTokenExpired,
+  NATIVE_PAGER_FALLBACK_NOTICE,
+  pagerExitNeedsBrowserLogin,
+  runTui,
+  TUI_REQUIRES_TTY_NOTICE,
+} from './tui'
 
 function scriptedIo(answers: string[]) {
   const written: string[] = []
@@ -32,24 +38,65 @@ const healthyHttp = () =>
   })
 
 describe('sisu tui', () => {
-  it('signs in at startup when logged out, then spawns the native pager', async () => {
+  it('treats a JWT past exp as expired and opaque tokens as usable', () => {
+    expect(accessTokenExpired('eyJhbGciOiJub25lIn0.eyJleHAiOjF9.sig', 2_000)).toBe(true)
+    expect(accessTokenExpired('eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.sig', 2_000)).toBe(false)
+    expect(accessTokenExpired('opaque-token', 2_000)).toBe(false)
+    expect(pagerExitNeedsBrowserLogin(null)).toBe(true)
+    expect(pagerExitNeedsBrowserLogin({ ...account, token: 'eyJhbGciOiJub25lIn0.eyJleHAiOjF9.sig' }, 2_000)).toBe(true)
+    expect(pagerExitNeedsBrowserLogin({ ...account, token: 'opaque-token' })).toBe(false)
+  })
+
+  it('opens the pager before browser login when logged out', async () => {
     const { io, written } = scriptedIo([])
+    const order: string[] = []
+    let session: typeof account | null = null
     const webLogin = jest.fn(async (input: { onStart?: (info: { verification_uri: string; verification_uri_complete: string; user_code: string }) => void } = {}) => {
+      order.push('login')
       input.onStart?.({
         verification_uri: 'https://www.sisu.chat/api/auth/cli/verify',
         verification_uri_complete: 'https://www.sisu.chat/api/auth/cli/verify?user_code=AA-11',
         user_code: 'AA-11',
       })
+      session = account
       return 'ada@sisu.chat'
     })
-    const auth = jest.fn().mockReturnValueOnce(null).mockReturnValue(account)
-    const spawnGrokPager = jest.fn().mockResolvedValue(0)
-    const code = await runTui(io, { auth, webLogin, spawnGrokPager, http: healthyHttp() })
+    const spawnGrokPager = jest.fn(async () => {
+      order.push('spawn')
+      return session ? 0 : 10
+    })
+    const code = await runTui(io, {
+      auth: () => session,
+      webLogin,
+      spawnGrokPager,
+      http: healthyHttp(),
+    })
     expect(code).toBe(0)
-    expect(webLogin).toHaveBeenCalledTimes(1)
-    expect(spawnGrokPager).toHaveBeenCalledWith([])
+    expect(order).toEqual(['spawn', 'login', 'spawn'])
     expect(written.join('')).toMatch(/Open https:\/\/www\.sisu\.chat\/api\/auth\/cli\/verify/)
     expect(written.join('')).toMatch(/logged in as ada@sisu\.chat/)
+  })
+
+  it('opens browser login when the pager asks and the saved token is expired', async () => {
+    const { io } = scriptedIo([])
+    const expired = 'eyJhbGciOiJub25lIn0.eyJleHAiOjF9.sig'
+    let session: typeof account | null = { ...account, token: expired }
+    const webLogin = jest.fn(async () => {
+      session = account
+      return 'ada@sisu.chat'
+    })
+    const spawnGrokPager = jest.fn()
+      .mockResolvedValueOnce(10)
+      .mockResolvedValueOnce(0)
+    const code = await runTui(io, {
+      auth: () => session,
+      webLogin,
+      spawnGrokPager,
+      http: healthyHttp(),
+    })
+    expect(code).toBe(0)
+    expect(webLogin).toHaveBeenCalledTimes(1)
+    expect(spawnGrokPager).toHaveBeenCalledTimes(2)
   })
 
   it('fails hard when the runtime health probe fails and never spawns the pager', async () => {

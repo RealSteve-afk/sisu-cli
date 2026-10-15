@@ -1,7 +1,7 @@
 import readline from 'readline'
 import { webLoginCommand, type WebLoginStart } from './commands'
 import { defaultHttp, HttpClient } from './http'
-import { DEFAULT_API_BASE, getSisuHome, readAuth, sisuEngineHome } from './store'
+import { DEFAULT_API_BASE, getSisuHome, readAuth, sisuEngineHome, type AuthRecord } from './store'
 import {
   assertRuntimeAvailable,
   findGrokBuildBinary,
@@ -27,6 +27,25 @@ export interface LineIo {
 
 /** Pager exits with this code so the host runs `sisu login` and respawns. */
 export const SISU_LOGIN_EXIT_CODE = 10
+
+/** True when the saved bearer cannot open a signed-in screen. Opaque tokens stay usable. */
+export function accessTokenExpired(token: string, nowMs = Date.now()): boolean {
+  const payload = token.split('.')[1]
+  if (!payload) return false
+  try {
+    const json = Buffer.from(payload, 'base64url').toString('utf8')
+    const exp = (JSON.parse(json) as { exp?: unknown }).exp
+    return typeof exp === 'number' && exp * 1000 <= nowMs
+  } catch {
+    return false
+  }
+}
+
+/** Pager exit 10 needs a browser login when there is no usable SiSu session. */
+export function pagerExitNeedsBrowserLogin(auth: AuthRecord | null, nowMs = Date.now()): boolean {
+  if (!auth?.token) return true
+  return accessTokenExpired(auth.token, nowMs)
+}
 
 /** Native pager missing is a failed launch, not a second product. */
 export const NATIVE_PAGER_FALLBACK_NOTICE =
@@ -155,29 +174,16 @@ export async function runTui(
     }, http)
   }
 
-  let account = auth()
-  if (!account) {
-    try {
-      const email = await startWebLogin((line) => io.write(`${line}\n`))
-      io.write(`logged in as ${email}\n`)
-    } catch (error) {
-      io.write(`${error instanceof Error ? error.message : String(error)}\n`)
-      io.write('login failed — run `sisu login`\n')
-      return 1
-    }
-    account = auth()
-    if (!account) {
-      io.write('login failed — run `sisu login`\n')
-      return 1
-    }
-  }
+  // The pager draws the login screen first. Browser login runs only after it exits 10.
+  const account = auth()
+  const apiBase = account?.api_base || process.env.SISU_API_BASE || DEFAULT_API_BASE
 
   try {
-    await probe(http, account.api_base)
+    await probe(http, apiBase)
   } catch (error) {
     if (!(error instanceof RuntimeUnavailable)) throw error
     io.write(
-      `sisu: SiSu runtime is not available at ${account.api_base}/api/runtime. ` +
+      `sisu: SiSu runtime is not available at ${apiBase}/api/runtime. ` +
         'This CLI will not fall back to xAI or open the fallback shell. Try again later.\n',
     )
     return 1
@@ -261,7 +267,7 @@ export async function runTui(
     }
     if (code !== SISU_LOGIN_EXIT_CODE) return code
     restoreInteractiveTerminal(io)
-    if (!auth() && !openedBrowserLogin) {
+    if (pagerExitNeedsBrowserLogin(auth()) && !openedBrowserLogin) {
       try {
         const email = await startWebLogin((line) => io.write(`${line}\n`))
         io.write(`logged in as ${email}\n`)

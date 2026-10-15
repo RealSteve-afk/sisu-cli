@@ -1295,12 +1295,19 @@ pub(crate) async fn run(
     // --force-login overrides: show the login screen even when credentials exist.
     let force_login = args.force_login && !connection.auth_methods.is_empty();
     let mut needs_interactive_login = connection.needs_login || force_login;
-    // Host already supplied a SiSu session. Auto-Login would quit 10 and
-    // bounce the browser in a loop.
-    if needs_interactive_login
+    if xai_grok_shell::sisu_access_point::session_needs_login() {
+        // Stay on the welcome menu. `l` / Enter exits 10 so the host opens
+        // the browser. Auto-login here would quit before the screen is usable.
+        needs_interactive_login = false;
+        app.welcome_prompt_focused = false;
+        app.auth_state = super::app_view::AuthState::Pending { error: None };
+        app.login_label = Some("SiSu".to_string());
+    } else if needs_interactive_login
         && xai_grok_shell::sisu_access_point::active()
         && xai_grok_shell::sisu_access_point::sisu_token().is_some()
     {
+        // Host already supplied a usable SiSu session. Auto-login would quit
+        // 10 and bounce the browser in a loop.
         needs_interactive_login = false;
     }
     if needs_interactive_login {

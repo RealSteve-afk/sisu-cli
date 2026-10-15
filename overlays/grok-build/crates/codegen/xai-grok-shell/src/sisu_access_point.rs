@@ -30,14 +30,86 @@ pub fn pin_runtime_url(candidate: &str) -> Option<String> {
     None
 }
 
-/// `Some(10)` when the host must log in. Direct pager invoke without a token
-/// must not fall through to grok.com OAuth.
+/// Kept for callers that used to exit before the screen. Login now stays on
+/// the welcome menu until the user chooses it, so this no longer exits.
 pub fn missing_token_exit_code() -> Option<i32> {
-    if active() && sisu_token().is_none() {
-        Some(HOST_LOGIN_EXIT_CODE)
-    } else {
-        None
+    None
+}
+
+/// Access-point startup should show the welcome login menu.
+/// A missing bearer, or a JWT whose `exp` is already past, counts.
+/// Opaque (non-JWT) tokens stay signed-in; the server still answers 401 later.
+pub fn session_needs_login() -> bool {
+    if !active() {
+        return false;
     }
+    match sisu_token() {
+        None => true,
+        Some(token) => jwt_is_expired(&token),
+    }
+}
+
+fn jwt_is_expired(token: &str) -> bool {
+    let Some(exp) = jwt_exp(token) else {
+        return false;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0);
+    exp <= now
+}
+
+fn jwt_exp(token: &str) -> Option<i64> {
+    let mut parts = token.split('.');
+    let _header = parts.next()?;
+    let payload = parts.next()?;
+    if parts.next().is_none() {
+        return None;
+    }
+    let bytes = b64url_decode(payload)?;
+    let text = std::str::from_utf8(&bytes).ok()?;
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    value.get("exp").and_then(|item| item.as_i64())
+}
+
+fn b64url_decode(input: &str) -> Option<Vec<u8>> {
+    fn val(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'-' => Some(62),
+            b'_' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::new();
+    let mut buf = [0u8; 4];
+    let mut filled = 0;
+    for &byte in input.as_bytes() {
+        if byte == b'=' {
+            break;
+        }
+        buf[filled] = val(byte)?;
+        filled += 1;
+        if filled == 4 {
+            out.push((buf[0] << 2) | (buf[1] >> 4));
+            out.push((buf[1] << 4) | (buf[2] >> 2));
+            out.push((buf[2] << 6) | buf[3]);
+            filled = 0;
+        }
+    }
+    match filled {
+        0 => {}
+        2 => out.push((buf[0] << 2) | (buf[1] >> 4)),
+        3 => {
+            out.push((buf[0] << 2) | (buf[1] >> 4));
+            out.push((buf[1] << 4) | (buf[2] >> 2));
+        }
+        _ => return None,
+    }
+    Some(out)
 }
 
 pub fn runtime_contract_error() -> Option<String> {
@@ -293,11 +365,26 @@ mod tests {
 
     #[test]
     #[serial]
-    fn missing_sisu_token_is_host_login() {
+    fn missing_sisu_token_stays_for_the_login_screen() {
         let _ap = EnvGuard::set("SISU_ACCESS_POINT", "1");
         let _tok = EnvGuard::unset("SISU_TOKEN");
         let _xai = EnvGuard::unset("XAI_API_KEY");
-        assert_eq!(missing_token_exit_code(), Some(10));
+        assert_eq!(missing_token_exit_code(), None);
+        assert!(session_needs_login());
+    }
+
+    #[test]
+    #[serial]
+    fn expired_jwt_needs_the_login_screen() {
+        let _ap = EnvGuard::set("SISU_ACCESS_POINT", "1");
+        let _tok = EnvGuard::set("SISU_TOKEN", "eyJhbGciOiJub25lIn0.eyJleHAiOjF9.sig");
+        let _xai = EnvGuard::unset("XAI_API_KEY");
+        assert!(session_needs_login());
+        let _fresh = EnvGuard::set(
+            "SISU_TOKEN",
+            "eyJhbGciOiJub25lIn0.eyJleHAiOjQxMDI0NDQ4MDB9.sig",
+        );
+        assert!(!session_needs_login());
     }
 
     #[test]
