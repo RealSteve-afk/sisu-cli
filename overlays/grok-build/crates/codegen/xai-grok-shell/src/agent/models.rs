@@ -346,6 +346,10 @@ impl ModelsManager {
 
         let (current_model_key, current_model, model_source) =
             resolve_default_model(cfg, &catalog, is_session_auth)?;
+        let mut catalog = catalog;
+        if !catalog.contains_key(&current_model_key) {
+            catalog.insert(current_model_key.clone(), current_model.clone());
+        }
 
         tracing::info!(
             model_id = %current_model.model,
@@ -1037,12 +1041,20 @@ impl ModelsManager {
             Some(m) => m,
             None => {
                 if crate::sisu_access_point::active() {
-                    return Err("no SiSu model available".to_string());
+                    if crate::sisu_access_point::session_needs_login() {
+                        let mut entry = ModelEntry::fallback("sisu", &config.endpoints);
+                        entry.info.name = Some("SiSu".to_string());
+                        fallback = entry;
+                        &fallback
+                    } else {
+                        return Err("no SiSu model available".to_string());
+                    }
+                } else {
+                    tracing::warn!("no models available in catalog; defaulting to bundled model");
+                    let default_id = crate::models::default_model().to_string();
+                    fallback = ModelEntry::fallback(&default_id, &config.endpoints);
+                    &fallback
                 }
-                tracing::warn!("no models available in catalog; defaulting to bundled model");
-                let default_id = crate::models::default_model().to_string();
-                fallback = ModelEntry::fallback(&default_id, &config.endpoints);
-                &fallback
             }
         };
 
