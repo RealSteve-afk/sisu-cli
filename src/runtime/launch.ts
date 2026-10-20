@@ -360,6 +360,8 @@ export function sisuGrokBuildEnv(): NodeJS.ProcessEnv {
   setEnv(env, 'GROK_MODELS_BASE_URL', runtime)
   // image_gen posts to {runtime}/images/generations; SiSu serves gpt-image-2.5 only.
   setEnv(env, 'GROK_IMAGE_GEN_MODEL_OVERRIDE', SISU_IMAGE_GEN_MODEL)
+  // image_edit posts to {runtime}/images/edits on the same model.
+  setEnv(env, 'GROK_IMAGE_EDIT_MODEL_OVERRIDE', SISU_IMAGE_GEN_MODEL)
   setEnv(env, 'GROK_MODELS_LIST_URL', `${runtime}/models`)
   setEnv(env, 'GROK_CLI_CHAT_PROXY_BASE_URL', runtime)
   setEnv(env, 'GROK_DISABLE_CLI_CHAT_PROXY', '1')
